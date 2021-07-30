@@ -4,20 +4,22 @@ import torch
 import torch.nn as nn
 from spikingjelly_lite.clock_driven import surrogate
 import math
+import torch.nn.functional as F
 
 
 class BaseNeuron(nn.Module):
-    def __init__(self, v_threshold=1.0, v_reset=0.0, surrogate_function=surrogate.Sigmoid(), detach_reset=False):
+    def __init__(self, v_threshold=1.0, v_reset=0.0, rand_init=False, surrogate_function=surrogate.Sigmoid()):
         super().__init__()
-        self.v_threshold = v_threshold
+        self.v_threshold = v_threshold # nn.Parameter(torch.tensor([v_threshold]))
         self.v_reset = v_reset
-        # self.detach_reset = detach_reset
         self.surrogate_function = surrogate_function
-        self.generate_init_v()
-        self.noise_intensity = 0.0
+        self.rand_init = rand_init
 
-    def generate_init_v(self):
-        self.v_init = 0
+    def generate_init_v(self, dv):
+        if not self.rand_init:
+            self.v_init = 0
+        else:
+            self.v_init = torch.rand_like(dv).to(dv)
 
     @abstractmethod
     def neuronal_charge(self, dv: torch.Tensor, v):
@@ -37,11 +39,6 @@ class BaseNeuron(nn.Module):
 
     def _neuronal_reset(self, t):
         # t = 0, 1, 2, ..., T-1
-        # if self.detach_reset:
-        #     spike = self.s[t].detach()
-        # else:
-        #     spike = self.s[t]
-
         if self.v_reset is None:
             self.v[t] = self.h[t] - self.s[t] * self.v_threshold
         else:
@@ -58,6 +55,7 @@ class BaseNeuron(nn.Module):
         self.v = {} # 脉冲发放后残留的电位
         T = input.shape[0]
 
+        self.generate_init_v(input[0])
         for t in range(T):
             self._neuronal_charge(input, t)
             self._neuronal_fire(t)
@@ -66,8 +64,8 @@ class BaseNeuron(nn.Module):
 
 
 class IFNeuron(BaseNeuron):
-    def __init__(self, v_threshold=1.0, v_reset=0.0, surrogate_function=surrogate.Sigmoid(), detach_reset=False):
-        super().__init__(v_threshold, v_reset, surrogate_function, detach_reset)
+    def __init__(self, v_threshold=1.0, v_reset=0.0, rand_init=False, surrogate_function=surrogate.Sigmoid()):
+        super().__init__(v_threshold, v_reset, rand_init, surrogate_function)
 
     def neuronal_charge(self, dv: torch.Tensor, v):
         h = v + dv
@@ -75,20 +73,16 @@ class IFNeuron(BaseNeuron):
 
 
 class LIFNeuron(BaseNeuron):
-    def __init__(self, tau=100.0, v_threshold=1.0, v_reset=0.0, surrogate_function=surrogate.Sigmoid(), detach_reset=False):
-        super().__init__(v_threshold, v_reset, surrogate_function, detach_reset)
+    def __init__(self, tau=100.0, v_threshold=1.0, v_reset=0.0, rand_init=False, surrogate_function=surrogate.Sigmoid()):
+        super().__init__(v_threshold, v_reset, rand_init, surrogate_function)
         self.tau = tau
 
     def extra_repr(self):
         return f'v_threshold={self.v_threshold}, v_reset={self.v_reset}, tau={self.tau}'
 
     def neuronal_charge(self, dv: torch.Tensor, v):
-        dv + self.noise_intensity * torch.sign(torch.randn_like(dv).to(dv))
         if self.v_reset is None:
             h = v + (dv - v) / self.tau
         else:
             h = v + (dv - (v - self.v_reset)) / self.tau
         return h
-
-
-
